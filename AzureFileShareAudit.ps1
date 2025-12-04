@@ -7,6 +7,15 @@
     and creates a timestamped CSV audit file. It maintains audit files for the past 31 days,
     removing older ones automatically.
 
+.PARAMETER StorageAccountName
+    Name of the Azure Storage Account
+
+.PARAMETER FileShareName
+    Name of the File Share to audit
+
+.PARAMETER ResourceGroupName
+    (Optional) Resource Group containing the Storage Account
+
 .NOTES
     Designed to run in an Azure Automation Account
     Requires Azure PowerShell modules: Az.Storage
@@ -35,9 +44,20 @@ catch {
     throw
 }
 
-# Get Storage Account Context
+# Display configuration
+Write-Output "Configuration:"
+Write-Output "  StorageAccountName: $StorageAccountName"
+Write-Output "  FileShareName: $FileShareName"
+if ($ResourceGroupName) {
+    Write-Output "  ResourceGroupName: $ResourceGroupName"
+}
+else {
+    Write-Output "  ResourceGroupName: Not specified (will search across subscription)"
+}
+
+# Get Storage Account and Create Context
 try {
-    Write-Output "Getting storage account context..."
+    Write-Output "Getting storage account information..."
     if ($ResourceGroupName) {
         $storageAccount = Get-AzStorageAccount -ResourceGroupName $ResourceGroupName -Name $StorageAccountName -ErrorAction Stop
     }
@@ -48,8 +68,15 @@ try {
         }
     }
     
-    $ctx = $storageAccount.Context
-    Write-Output "Successfully obtained storage context for '$StorageAccountName'"
+    Write-Output "Retrieving storage account key..."
+    # Get storage account key using Managed Identity
+    $keys = Get-AzStorageAccountKey -ResourceGroupName $storageAccount.ResourceGroupName -Name $StorageAccountName -ErrorAction Stop
+    $storageKey = $keys[0].Value
+    
+    Write-Output "Creating storage context with account key..."
+    # Create context using storage account key
+    $ctx = New-AzStorageContext -StorageAccountName $StorageAccountName -StorageAccountKey $storageKey -ErrorAction Stop
+    Write-Output "Successfully created storage context for '$StorageAccountName'"
 }
 catch {
     Write-Error "Failed to get storage account context: $_"
@@ -76,7 +103,15 @@ function Get-AzFileShareFilesRecursive {
         $items = Get-AzStorageFile -Context $Context -ShareName $ShareName -Path $Path -ErrorAction Stop
         
         foreach ($item in $items) {
-            if ($item.GetType().Name -eq "AzureStorageFileDirectory" -or $item.IsDirectory) {
+            # Skip the AuditLifeCycle folder to avoid recursing into audit results
+            if ($item.Name -eq "AuditLifeCycle") {
+                continue
+            }
+            
+            # Check if is a directory
+            $isDirectory = ($item.GetType().Name -eq "AzureStorageFileDirectory") -or ($null -ne $item.IsDirectory -and $item.IsDirectory -eq $true)
+            
+            if ($isDirectory) {
                 # If it's a directory, recurse into it
                 $subPath = if ($Path) { "$Path/$($item.Name)" } else { $item.Name }
                 $files += Get-AzFileShareFilesRecursive -Context $Context -ShareName $ShareName -Path $subPath
@@ -85,8 +120,12 @@ function Get-AzFileShareFilesRecursive {
                 # If it's a file, get its properties and add to collection
                 $filePath = if ($Path) { "$Path/$($item.Name)" } else { $item.Name }
                 
-                # Fetch detailed properties
-                $fileProperties = Get-AzStorageFile -Context $Context -ShareName $ShareName -Path $filePath | Get-AzStorageFile
+                # Fetch detailed properties including SMB attributes
+                $fileDetails = Get-AzStorageFile -Context $Context -ShareName $ShareName -Path $filePath
+                
+                # Extract SMB Properties
+                $smbProps = $fileDetails.FileProperties.SmbProperties
+                $fileProps = $fileDetails.FileProperties
                 
                 $fileInfo = [PSCustomObject]@{
                     FileName = $item.Name
@@ -95,12 +134,25 @@ function Get-AzFileShareFilesRecursive {
                     SizeBytes = $item.Length
                     SizeKB = [math]::Round($item.Length / 1KB, 2)
                     SizeMB = [math]::Round($item.Length / 1MB, 2)
-                    LastModified = $item.Properties.LastModified
-                    ETag = $item.Properties.ETag
-                    ContentType = $item.Properties.ContentType
-                    IsServerEncrypted = $item.Properties.IsServerEncrypted
-                    FileId = $item.Properties.FileId
-                    ParentId = $item.Properties.ParentId
+                    LastModified = $fileDetails.LastModified
+                    ETag = $fileProps.ETag
+                    ContentType = $fileProps.ContentType
+                    ContentEncoding = $fileProps.ContentEncoding
+                    CacheControl = $fileProps.CacheControl
+                    ContentDisposition = $fileProps.ContentDisposition
+                    ContentLanguage = $fileProps.ContentLanguage
+                    IsServerEncrypted = $fileProps.IsServerEncrypted
+                    LeaseStatus = $fileProps.LeaseStatus
+                    LeaseState = $fileProps.LeaseState
+                    # SMB Properties
+                    FileId = $smbProps.FileId
+                    ParentId = $smbProps.ParentId
+                    FileAttributes = $smbProps.FileAttributes
+                    FilePermissionKey = $smbProps.FilePermissionKey
+                    FileCreatedOn = $smbProps.FileCreatedOn
+                    FileLastWrittenOn = $smbProps.FileLastWrittenOn
+                    FileChangedOn = $smbProps.FileChangedOn
+                    # Audit Information
                     AuditDate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
                     StorageAccountName = $StorageAccountName
                     FileShareName = $ShareName
@@ -174,9 +226,20 @@ try {
             LastModified = ""
             ETag = ""
             ContentType = ""
+            ContentEncoding = ""
+            CacheControl = ""
+            ContentDisposition = ""
+            ContentLanguage = ""
             IsServerEncrypted = ""
+            LeaseStatus = ""
+            LeaseState = ""
             FileId = ""
             ParentId = ""
+            FileAttributes = ""
+            FilePermissionKey = ""
+            FileCreatedOn = ""
+            FileLastWrittenOn = ""
+            FileChangedOn = ""
             AuditDate = ""
             StorageAccountName = ""
             FileShareName = ""
