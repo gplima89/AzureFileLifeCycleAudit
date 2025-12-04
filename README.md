@@ -2,7 +2,7 @@
 
 ## Overview
 
-This PowerShell script automates the auditing of files in an Azure Storage File Share. It runs within an Azure Automation Account and generates detailed CSV reports containing metadata for all files in the specified file share.
+This PowerShell script automates the auditing of files in an Azure Storage File Share. It runs within an Azure Automation Account and exports detailed metadata to an Azure Storage Table for efficient querying and analysis.
 
 ## Objective
 
@@ -10,8 +10,8 @@ The primary objectives of this script are to:
 
 1. **Enumerate all files** in an Azure Storage File Share recursively
 2. **Capture comprehensive metadata** for each file (name, path, size, last modified date, etc.)
-3. **Generate timestamped CSV audit reports** stored in the file share itself
-4. **Maintain audit history** by keeping CSV files for the past 31 days and automatically removing older files
+3. **Export audit data to Azure Storage Table** for efficient querying and long-term storage
+4. **Maintain audit history** by keeping records for the past 31 days and automatically removing older entries
 5. **Automate the process** through Azure Automation for scheduled or on-demand execution
 
 ## Features
@@ -19,9 +19,10 @@ The primary objectives of this script are to:
 - ✅ Recursive file enumeration across all directories
 - ✅ Comprehensive metadata capture (28 fields per file including SMB properties)
 - ✅ SMB permissions and timestamps (Created, LastWritten, Changed)
-- ✅ Automatic audit folder creation (`AuditLifeCycle`)
-- ✅ Timestamped CSV files for historical tracking
-- ✅ Automatic cleanup of audit files older than 31 days
+- ✅ Azure Storage Table export for efficient querying
+- ✅ Automatic table creation (`FileLifeCycleAudit`)
+- ✅ Partition key by date for optimal query performance
+- ✅ Automatic cleanup of audit records older than 31 days
 - ✅ Managed Identity authentication (secure, no credential management)
 - ✅ Detailed logging and error handling
 
@@ -31,6 +32,8 @@ Each file in the audit report includes:
 
 | Field | Description |
 |-------|-------------|
+| PartitionKey | Date-based partition (YYYYMMDD) for query optimization |
+| RowKey | Unique identifier combining audit run and file path |
 | FileName | Name of the file |
 | FullPath | Complete path within the file share |
 | Directory | Parent directory path |
@@ -55,8 +58,10 @@ Each file in the audit report includes:
 | FileLastWrittenOn | Last write timestamp (SMB) |
 | FileChangedOn | Last changed timestamp (SMB) |
 | AuditDate | Date and time the audit was performed |
+| AuditRunId | Unique identifier for the audit run |
 | StorageAccountName | Name of the storage account |
 | FileShareName | Name of the file share |
+| Timestamp | Azure Table Storage timestamp (auto-generated) |
 
 ## Prerequisites
 
@@ -70,18 +75,19 @@ Each file in the audit report includes:
 
 The Azure Automation Account's Managed Identity requires:
 
-- **Storage File Data SMB Share Contributor** role on the Storage Account or File Share
+- **Storage File Data SMB Share Contributor** role on the Storage Account (for File Share access)
+- **Storage Account Contributor** role on the Storage Account (for retrieving storage keys)
+- **Storage Table Data Contributor** role on the Storage Account (for Table Storage access)
 
-  OR
-
-- **Storage File Data SMB Share Reader** role (for read-only access) + **Storage Account Contributor** role (for creating directories)
+*Note: All three roles are required for the runbook to function properly*
 
 ### PowerShell Modules
 
 - **Az.Accounts** - For Azure authentication
 - **Az.Storage** - For file share operations
+- **AzTable** - For Azure Table Storage operations
 
-*Note: These modules are typically pre-installed in Azure Automation Accounts*
+*Note: Az.Accounts and Az.Storage are typically pre-installed in Azure Automation Accounts. AzTable needs to be imported.*
 
 ## Setup Instructions
 
@@ -101,25 +107,53 @@ The Azure Automation Account's Managed Identity requires:
 
 ### Step 3: Assign Storage Permissions
 
+The Managed Identity requires three role assignments on the Storage Account:
+
+**Role 1: Storage File Data SMB Share Contributor**
 1. Navigate to your **Storage Account** in the Azure Portal
 2. Go to **Access Control (IAM)**
 3. Click **+ Add** > **Add role assignment**
-4. Select the role:
-   - **Storage File Data SMB Share Contributor** (recommended)
-   - OR **Storage File Data SMB Share Reader** (if you prefer minimal permissions)
+4. Select **Storage File Data SMB Share Contributor**
 5. Click **Next**
 6. Select **Managed Identity**
 7. Click **+ Select members**
 8. Filter by **Automation Account** and select your automation account
 9. Click **Review + assign**
 
-### Step 4: Verify/Import PowerShell Modules
+**Role 2: Storage Account Contributor**
+1. In the same Storage Account, go to **Access Control (IAM)**
+2. Click **+ Add** > **Add role assignment**
+3. Select **Storage Account Contributor**
+4. Click **Next**
+5. Select **Managed Identity**
+6. Click **+ Select members**
+7. Filter by **Automation Account** and select your automation account
+8. Click **Review + assign**
+
+**Role 3: Storage Table Data Contributor**
+1. In the same Storage Account, go to **Access Control (IAM)**
+2. Click **+ Add** > **Add role assignment**
+3. Select **Storage Table Data Contributor**
+4. Click **Next**
+5. Select **Managed Identity**
+6. Click **+ Select members**
+7. Filter by **Automation Account** and select your automation account
+8. Click **Review + assign**
+
+### Step 4: Import Required PowerShell Modules
 
 1. In your Azure Automation Account, go to **Shared Resources** > **Modules**
 2. Verify the following modules are present and up-to-date:
    - `Az.Accounts` (version 2.x or higher)
    - `Az.Storage` (version 5.x or higher)
-3. If modules need updating:
+3. Import the **AzTable** module:
+   - Click **Browse gallery**
+   - Search for `AzTable`
+   - Click on the module
+   - Select **Runtime version 7.2** (or your runbook's runtime version)
+   - Click **Import** and wait for completion (may take several minutes)
+   - Verify the module shows **ProvisioningState: Succeeded**
+4. If other modules need updating:
    - Click **Browse gallery**
    - Search for the module name
    - Click **Import** and wait for completion
@@ -153,13 +187,28 @@ The Azure Automation Account's Managed Identity requires:
    - CSV file creation and upload
    - Cleanup summary
 
-### Step 7: Verify the Audit File
+### Step 7: Verify the Audit Records
 
-1. Navigate to your **Storage Account** > **File shares**
-2. Open your file share
-3. Verify the `AuditLifeCycle` folder was created
-4. Inside, find the CSV file named `LifeCycleAudit_YYYYMMDD_HHMMSS.csv`
-5. Download and review the audit report
+1. Navigate to your **Storage Account** > **Storage browser** > **Tables**
+2. Open the `FileLifeCycleAudit` table
+3. Verify records were inserted (you should see entries with PartitionKey matching today's date in YYYYMMDD format)
+4. Review the audit data:
+   - **PartitionKey**: Date of the audit (e.g., `20251204`)
+   - **RowKey**: Unique identifier for each file record
+   - **Properties**: All file metadata fields
+
+**Alternative: Query via Azure Portal**
+1. Go to **Storage Account** > **Storage browser** > **Tables** > `FileLifeCycleAudit`
+2. Click **Query** to filter records
+3. Example query: `PartitionKey eq '20251204'` (replace with your date)
+
+**Alternative: Query via PowerShell**
+```powershell
+$ctx = New-AzStorageContext -StorageAccountName "yourstorageaccount" -StorageAccountKey "yourkey"
+$table = Get-AzStorageTable -Context $ctx -Name "FileLifeCycleAudit"
+$records = Get-AzTableRow -Table $table.CloudTable -Top 10
+$records | Format-Table PartitionKey, RowKey, FileName, SizeMB, AuditDate
+```
 
 ### Step 8: Schedule the Runbook (Optional)
 
@@ -242,9 +291,10 @@ document.pdf,reports/document.pdf,reports,2048576,2000,1.95,2025-12-01 10:30:00,
 ## Retention Policy
 
 The script automatically:
-- Keeps audit files for the **last 31 days**
-- Deletes audit files older than 31 days during each execution
-- Logs the number of files deleted
+- Keeps audit records for the **last 31 days** (based on PartitionKey date)
+- Deletes audit records older than 31 days during each execution
+- Logs the number of records deleted
+- Uses date-based partitioning for efficient cleanup queries
 
 ## Troubleshooting
 
@@ -260,50 +310,79 @@ The script automatically:
   - `ResourceGroupName` (optional)
 - Check that parameter values are correct and the resources exist
 
-**Issue**: "Access denied" or "Forbidden"
-- **Solution**: Verify the Managed Identity has the correct role assignment on the Storage Account
+**Issue**: "Access denied" or "Forbidden" on Storage Table
+- **Solution**: Verify the Managed Identity has **Storage Table Data Contributor** role on the Storage Account
+- Verify **Storage File Data SMB Share Contributor** and **Storage Account Contributor** roles are also assigned
 
 **Issue**: "Storage account not found"
 - **Solution**: 
-  - Ensure the storage account name in the Automation Variable is correct
+  - Ensure the storage account name parameter is correct
   - Verify the storage account is accessible from the Automation Account's subscription
-  - If not using `ResourceGroupName` variable, ensure the Managed Identity has access to search across the subscription
+  - If not using `ResourceGroupName` parameter, ensure the Managed Identity has access to search across the subscription
 
-**Issue**: "Module not found"
-- **Solution**: Import/update Az.Storage and Az.Accounts modules in the Automation Account
+**Issue**: "Module not found" or "AzTable module error"
+- **Solution**: Import the **AzTable** module in the Automation Account:
+  - Go to **Modules** > **Browse gallery**
+  - Search for `AzTable`
+  - Select runtime version 7.2 and click **Import**
+  - Wait for provisioning to complete
+
+**Issue**: "Failed to create or access Storage Table"
+- **Solution**: 
+  - Verify **Storage Table Data Contributor** role is assigned to the Managed Identity
+  - Check that the storage account allows table storage operations
+  - Review the job output for specific error messages
 
 **Issue**: "Runbook fails with timeout"
 - **Solution**: For very large file shares, consider increasing the runbook timeout or optimizing the script
 
-### Viewing Logs
+### Using the Troubleshoot Script
 
-1. Navigate to your runbook in Azure Automation
-2. Go to **Resources** > **Jobs**
-3. Select a job to view detailed output and errors
+Run the `TroubleshootRunbook.ps1` script to validate all prerequisites:
+
+```powershell
+# Update configuration variables at the top of the script, then run:
+.\TroubleshootRunbook.ps1
+```
+
+The troubleshoot script validates:
+- Automation Account status
+- Managed Identity configuration
+- Storage Account and File Share access
+- Storage Table existence and access
+- Role assignments (all 3 required roles)
+- PowerShell module installation (including AzTable)
+- Latest job execution results
 
 ## Best Practices
 
 1. **Test in non-production** before deploying to production file shares
 2. **Use descriptive schedule names** when auditing multiple storage accounts (e.g., `Daily-Prod-Finance-Share`)
 3. **Monitor execution time** for large file shares and adjust schedules accordingly
-4. **Review audit files regularly** to ensure data is being captured correctly
+4. **Query audit records regularly** using Azure Portal or PowerShell to analyze file lifecycle
 5. **Set up alerts** for failed runbook executions
 6. **Document schedule parameters** in the schedule description for future reference
 7. **Stagger schedules** for multiple storage accounts to avoid resource contention
 8. **Use consistent naming** for easier tracking (e.g., prefix schedules by environment or department)
+9. **Leverage PartitionKey** for efficient queries (queries by date are optimized)
 
 ## Cost Considerations
 
-- Azure Automation: First 500 minutes/month free, then minimal cost per minute
-- Storage: Minimal cost for storing CSV files (typically < 1 MB each)
-- File Share access: Standard transaction costs apply
+- **Azure Automation**: First 500 minutes/month free, then minimal cost per minute of execution
+- **Storage Table**: Pay-per-transaction model
+  - Write operations: ~$0.10 per 100,000 transactions
+  - Read operations: ~$0.01 per 100,000 transactions
+  - Storage: ~$0.07 per GB/month (typically < 1 GB for most file shares)
+- **File Share access**: Standard transaction costs apply for enumeration
+- **Overall**: Typical monthly cost < $1 for small to medium file shares
 
 ## Security Notes
 
 - Uses **Managed Identity** - no credentials stored in code
-- Operates with **least-privilege** access (read-only option available)
-- Audit trail maintained through CSV files
+- Operates with **appropriate RBAC roles** for file and table access
+- Audit trail maintained through Storage Table with 31-day retention
 - All operations logged in Azure Automation
+- Storage Table data encrypted at rest by default
 
 ## Support & Modifications
 
@@ -327,9 +406,14 @@ To modify script behavior:
 2. Save and test your changes
 3. Publish the updated version
 
-For extended retention periods, modify line 238:
+For extended retention periods, modify the retention logic:
 ```powershell
 $cutoffDate = (Get-Date).AddDays(-31)  # Change -31 to your desired days
+```
+
+To change the Storage Table name, modify:
+```powershell
+$tableName = "FileLifeCycleAudit"  # Change to your desired table name
 ```
 
 ## Configuration Summary
@@ -339,13 +423,24 @@ Once setup is complete, your Automation Account should have:
 | Component | Details |
 |-----------|---------|
 | **Managed Identity** | System-assigned, enabled |
-| **Role Assignment** | Storage File Data SMB Share Contributor + Storage Account Contributor on each Storage Account |
-| **Modules** | Az.Accounts (2.x+), Az.Storage (5.x+) |
-| **Runbook** | AzureFileShareAudit (PowerShell 7.2) with parameters |
+| **Role Assignments** | Storage File Data SMB Share Contributor + Storage Account Contributor + Storage Table Data Contributor on each Storage Account |
+| **Modules** | Az.Accounts (2.x+), Az.Storage (5.x+), AzTable (2.x+) |
+| **Runbook** | FileStorageLifeCycle (PowerShell 7.2) with parameters |
+| **Storage Table** | FileLifeCycleAudit (auto-created on first run) |
 | **Schedules** | Optional - create multiple schedules for different storage accounts/file shares |
 | **Parameters** | StorageAccountName (required), FileShareName (required), ResourceGroupName (optional) |
 
 ## Version History
+
+- **v2.0** (2025-12-04): Storage Table export implementation
+  - Changed from CSV export to Azure Storage Table
+  - Table name: FileLifeCycleAudit (auto-created)
+  - Date-based partitioning for efficient queries
+  - Added AuditRunId for tracking individual audit runs
+  - Automatic cleanup of records older than 31 days
+  - Added Storage Table Data Contributor role requirement
+  - Added AzTable PowerShell module dependency
+  - Updated troubleshooting script for table validation
 
 - **v1.2** (2025-12-04): Updated to use Parameters instead of Variables
   - Support for multiple storage accounts via parameters
