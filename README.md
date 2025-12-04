@@ -17,7 +17,8 @@ The primary objectives of this script are to:
 ## Features
 
 - ✅ Recursive file enumeration across all directories
-- ✅ Comprehensive metadata capture (15+ fields per file)
+- ✅ Comprehensive metadata capture (28 fields per file including SMB properties)
+- ✅ SMB permissions and timestamps (Created, LastWritten, Changed)
 - ✅ Automatic audit folder creation (`AuditLifeCycle`)
 - ✅ Timestamped CSV files for historical tracking
 - ✅ Automatic cleanup of audit files older than 31 days
@@ -39,9 +40,20 @@ Each file in the audit report includes:
 | LastModified | Last modification timestamp |
 | ETag | Entity tag for version tracking |
 | ContentType | MIME type of the file |
+| ContentEncoding | Content encoding type |
+| CacheControl | HTTP cache control headers |
+| ContentDisposition | Content disposition header |
+| ContentLanguage | Content language |
 | IsServerEncrypted | Server-side encryption status |
-| FileId | Unique file identifier |
-| ParentId | Parent directory identifier |
+| LeaseStatus | Lease status of the file |
+| LeaseState | Current lease state |
+| FileId | Unique file identifier (SMB) |
+| ParentId | Parent directory identifier (SMB) |
+| FileAttributes | File attributes (Archive, ReadOnly, etc.) |
+| FilePermissionKey | SMB file permission key |
+| FileCreatedOn | File creation timestamp (SMB) |
+| FileLastWrittenOn | Last write timestamp (SMB) |
+| FileChangedOn | Last changed timestamp (SMB) |
 | AuditDate | Date and time the audit was performed |
 | StorageAccountName | Name of the storage account |
 | FileShareName | Name of the file share |
@@ -112,40 +124,7 @@ The Azure Automation Account's Managed Identity requires:
    - Search for the module name
    - Click **Import** and wait for completion
 
-### Step 5: Configure Automation Variables
-
-The script reads its configuration from Automation Account variables instead of parameters.
-
-1. In your Azure Automation Account, go to **Shared Resources** > **Variables**
-2. Click **+ Add a variable** to create each of the following:
-
-   **Variable 1: StorageAccountName (Required)**
-   - Name: `StorageAccountName`
-   - Description: `Name of the Azure Storage Account`
-   - Type: `String`
-   - Value: Enter your storage account name (e.g., `mystorageaccount`)
-   - Encrypted: `No`
-   - Click **Create**
-
-   **Variable 2: FileShareName (Required)**
-   - Name: `FileShareName`
-   - Description: `Name of the File Share to audit`
-   - Type: `String`
-   - Value: Enter your file share name (e.g., `myfileshare`)
-   - Encrypted: `No`
-   - Click **Create**
-
-   **Variable 3: ResourceGroupName (Optional)**
-   - Name: `ResourceGroupName`
-   - Description: `Resource Group containing the Storage Account`
-   - Type: `String`
-   - Value: Enter your resource group name (e.g., `myresourcegroup`)
-   - Encrypted: `No`
-   - Click **Create**
-
-3. Verify all variables are created and have the correct values
-
-### Step 6: Import the Runbook
+### Step 5: Import the Runbook
 
 1. In your Azure Automation Account, go to **Process Automation** > **Runbooks**
 2. Click **+ Create a runbook**
@@ -153,25 +132,28 @@ The script reads its configuration from Automation Account variables instead of 
 4. Select **Runbook type**: **PowerShell**
 5. Select **Runtime version**: **7.2** (or latest available)
 6. Click **Create**
-7. In the editor, paste the contents of `AzureFileShareAudit.ps1`
+7. In the editor, paste the contents of `FileStorageLifeCycle.ps1`
 8. Click **Save**
 9. Click **Publish** and confirm
 
-### Step 7: Test the Runbook
+### Step 6: Test the Runbook
 
 1. In the runbook page, click **Start**
-2. **No parameters are required** - the script will read from Automation Variables
+2. Enter the **required parameters**:
+   - **StorageAccountName**: Your storage account name (e.g., `mystorageaccount`)
+   - **FileShareName**: Your file share name (e.g., `myfileshare`)
+   - **ResourceGroupName**: (Optional) Resource group name (e.g., `myresourcegroup`)
 3. Click **OK** to start the runbook
 4. Monitor the **Output** tab for progress and results
 5. Verify the output shows:
    - Successful connection to Azure
-   - Retrieved configuration from Automation Variables
+   - Configuration parameters displayed
    - Storage account and file share names
    - File enumeration progress
    - CSV file creation and upload
    - Cleanup summary
 
-### Step 8: Verify the Audit File
+### Step 7: Verify the Audit File
 
 1. Navigate to your **Storage Account** > **File shares**
 2. Open your file share
@@ -179,52 +161,69 @@ The script reads its configuration from Automation Account variables instead of 
 4. Inside, find the CSV file named `LifeCycleAudit_YYYYMMDD_HHMMSS.csv`
 5. Download and review the audit report
 
-### Step 9: Schedule the Runbook (Optional)
+### Step 8: Schedule the Runbook (Optional)
 
 1. In the runbook page, click **Schedules** > **+ Add a schedule**
 2. Click **Link a schedule to your runbook**
 3. Click **+ Add a schedule**
 4. Configure the schedule:
-   - **Name**: e.g., `Daily-File-Share-Audit`
+   - **Name**: e.g., `Daily-StorageAccount1-Audit` (use descriptive names for multiple schedules)
    - **Starts**: Choose your start date/time
    - **Recurrence**: Select **Recurring**
    - **Recur every**: `1 Day` (or your preferred frequency)
 5. Click **Create**
-6. **No parameters are needed** - click **OK** to link the schedule
-7. The runbook will now execute automatically according to the schedule
+6. **Enter the runbook parameters** for this schedule:
+   - **StorageAccountName**: e.g., `mystorageaccount`
+   - **FileShareName**: e.g., `myfileshare`
+   - **ResourceGroupName**: e.g., `myresourcegroup` (optional)
+7. Click **OK** to link the schedule
+8. The runbook will execute automatically according to the schedule with these parameters
+
+**Creating Multiple Schedules:**
+- You can create multiple schedules with different parameters to audit different storage accounts/file shares
+- Each schedule can have its own timing and parameter set
+- Example: `Daily-Production-Audit`, `Weekly-Archive-Audit`, etc.
 
 ## Usage
 
 ### Manual Execution
 
-The script reads configuration from Automation Variables - no parameters are required:
+The script uses parameters for flexible configuration:
 
 1. Navigate to your runbook in Azure Automation
 2. Click **Start**
-3. Click **OK** (no parameters needed)
-4. Monitor the output
+3. Enter the required parameters:
+   - **StorageAccountName**: Name of your storage account
+   - **FileShareName**: Name of the file share to audit
+   - **ResourceGroupName**: (Optional) Resource group containing the storage account
+4. Click **OK**
+5. Monitor the output
 
 The script will automatically:
-- Read `StorageAccountName`, `FileShareName`, and `ResourceGroupName` from Automation Variables
 - Connect using Managed Identity
-- Enumerate files and create the audit CSV
+- Enumerate files from the specified file share
+- Create timestamped audit CSV
 - Upload to the `AuditLifeCycle` folder
 - Clean up files older than 31 days
 
 ### Scheduled Execution
 
-Once scheduled, the runbook will execute automatically according to your configured schedule, creating timestamped audit files and maintaining the 31-day retention policy.
+Once scheduled, the runbook will execute automatically with the parameters you specified in the schedule configuration, creating timestamped audit files and maintaining the 31-day retention policy.
 
-### Updating Configuration
+### Multiple Storage Accounts
 
-To change storage account, file share, or resource group:
+To audit multiple storage accounts or file shares:
 
-1. Go to **Shared Resources** > **Variables** in your Automation Account
-2. Click on the variable you want to change
-3. Update the **Value**
-4. Click **Save**
+1. Create separate schedules for each storage account/file share combination
+2. Each schedule can have:
+   - Different timing (daily, weekly, monthly)
+   - Different parameters (storage account, file share, resource group)
+   - Different naming for easy identification
 
-Changes take effect immediately on the next runbook execution.
+**Example Schedule Setup:**
+- Schedule 1: `Daily-Production-Share` → `storageacct1 / prodshare`
+- Schedule 2: `Weekly-Archive-Share` → `storageacct1 / archiveshare`
+- Schedule 3: `Daily-DevStorage-Share` → `storageacct2 / devshare`
 
 ## Output
 
@@ -236,8 +235,8 @@ The script generates:
 ### Sample CSV Output
 
 ```csv
-FileName,FullPath,Directory,SizeBytes,SizeKB,SizeMB,LastModified,ETag,ContentType,IsServerEncrypted,FileId,ParentId,AuditDate,StorageAccountName,FileShareName
-document.pdf,reports/document.pdf,reports,2048576,2000,1.95,2025-12-01 10:30:00,"""0x8DC...""",application/pdf,True,12345,67890,2025-12-04 14:22:15,mystorageaccount,myfileshare
+FileName,FullPath,Directory,SizeBytes,SizeKB,SizeMB,LastModified,ETag,ContentType,ContentEncoding,CacheControl,ContentDisposition,ContentLanguage,IsServerEncrypted,LeaseStatus,LeaseState,FileId,ParentId,FileAttributes,FilePermissionKey,FileCreatedOn,FileLastWrittenOn,FileChangedOn,AuditDate,StorageAccountName,FileShareName
+document.pdf,reports/document.pdf,reports,2048576,2000,1.95,2025-12-01 10:30:00,"""0x8DC...""",application/pdf,,,,,True,Unlocked,Available,12345,67890,Archive,2740313032837045223*10279295101118051177,2025-12-01 10:29:55,2025-12-01 10:30:00,2025-12-01 10:30:00,2025-12-04 14:22:15,mystorageaccount,myfileshare
 ```
 
 ## Retention Policy
@@ -254,12 +253,12 @@ The script automatically:
 **Issue**: "Failed to connect to Azure"
 - **Solution**: Verify Managed Identity is enabled in the Automation Account
 
-**Issue**: "Failed to retrieve Automation Variables"
-- **Solution**: Ensure all required variables are created in **Shared Resources** > **Variables**:
+**Issue**: "Parameter validation failed"
+- **Solution**: Ensure you provide the required parameters when starting the runbook:
   - `StorageAccountName` (required)
   - `FileShareName` (required)
   - `ResourceGroupName` (optional)
-- Check that variable names match exactly (case-sensitive)
+- Check that parameter values are correct and the resources exist
 
 **Issue**: "Access denied" or "Forbidden"
 - **Solution**: Verify the Managed Identity has the correct role assignment on the Storage Account
@@ -285,12 +284,13 @@ The script automatically:
 ## Best Practices
 
 1. **Test in non-production** before deploying to production file shares
-2. **Use Automation Variables** for all configuration (already implemented in the script)
+2. **Use descriptive schedule names** when auditing multiple storage accounts (e.g., `Daily-Prod-Finance-Share`)
 3. **Monitor execution time** for large file shares and adjust schedules accordingly
 4. **Review audit files regularly** to ensure data is being captured correctly
 5. **Set up alerts** for failed runbook executions
-6. **Document variable values** in the variable descriptions for future reference
-7. **Use encrypted variables** if storing sensitive configuration (though storage account names are typically not sensitive)
+6. **Document schedule parameters** in the schedule description for future reference
+7. **Stagger schedules** for multiple storage accounts to avoid resource contention
+8. **Use consistent naming** for easier tracking (e.g., prefix schedules by environment or department)
 
 ## Cost Considerations
 
@@ -309,11 +309,16 @@ The script automatically:
 
 ### Changing Configuration
 
-No script modification needed - simply update the Automation Variables:
-1. Go to **Shared Resources** > **Variables**
-2. Click on the variable to update
-3. Change the value
-4. Save
+To change what storage accounts or file shares are audited:
+
+**For scheduled runs:**
+1. Go to the runbook's **Schedules** section
+2. Click on the schedule to modify
+3. Update the parameters
+4. Save changes
+
+**For manual runs:**
+- Simply provide different parameters when starting the runbook
 
 ### Modifying the Script
 
@@ -334,19 +339,26 @@ Once setup is complete, your Automation Account should have:
 | Component | Details |
 |-----------|---------|
 | **Managed Identity** | System-assigned, enabled |
-| **Role Assignment** | Storage File Data SMB Share Contributor on Storage Account |
+| **Role Assignment** | Storage File Data SMB Share Contributor + Storage Account Contributor on each Storage Account |
 | **Modules** | Az.Accounts (2.x+), Az.Storage (5.x+) |
-| **Variables** | StorageAccountName, FileShareName, ResourceGroupName (optional) |
-| **Runbook** | AzureFileShareAudit (PowerShell 7.2) |
-| **Schedule** | Optional - configure based on your audit frequency needs |
+| **Runbook** | AzureFileShareAudit (PowerShell 7.2) with parameters |
+| **Schedules** | Optional - create multiple schedules for different storage accounts/file shares |
+| **Parameters** | StorageAccountName (required), FileShareName (required), ResourceGroupName (optional) |
 
 ## Version History
 
-- **v1.1** (2025-12-04): Updated to use Automation Variables
-  - Removed hardcoded parameters
-  - Configuration managed through Automation Variables
-  - Simplified runbook execution (no parameters needed)
-  - Enhanced error messages for variable retrieval
+- **v1.2** (2025-12-04): Updated to use Parameters instead of Variables
+  - Support for multiple storage accounts via parameters
+  - Ability to create multiple schedules with different parameters
+  - More flexible configuration for multi-tenant scenarios
+  - Added comprehensive SMB properties capture
+  - Enhanced metadata with 28 fields per file
+
+- **v1.1** (2025-12-04): Enhanced metadata capture
+  - Added SMB properties (FileCreatedOn, FileLastWrittenOn, FileChangedOn)
+  - Added file attributes and permission keys
+  - Added content headers and lease information
+  - Fixed directory enumeration to skip AuditLifeCycle folder
 
 - **v1.0** (2025-12-04): Initial release
   - Recursive file enumeration
